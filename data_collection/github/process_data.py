@@ -49,10 +49,13 @@ def main():
         if 'content' not in line_json or 'ext' not in line_json:
             continue
         content = remove_comments(line_json['content'], line_json['ext'])
+        content = re.sub('^\n+', '', content)
+        content = re.sub('\n\n+', '\n\n', content)
         if args.add_statistics:
             total_len += len(content)
             token_count += len(word_tokenize(content))
-        out_file.write(json.dumps({'content': content}))
+        out_file.write(json.dumps({'content': content}) + '\n')
+    out_file.close()
     if args.add_statistics:
         print(f"Total len: {total_len}, token count: {token_count}")
 
