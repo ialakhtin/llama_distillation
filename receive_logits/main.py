@@ -9,7 +9,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 huggingface_hub.login('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')
 load_config = BitsAndBytesConfig(load_in_8bit=True)
-model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf", quantization_config=load_config)
+model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf", quantization_config=load_config, torch_dtype=torch.bfloat16)
 tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
 
 os.environ["DATA_DIR"] = "data/dolma"
@@ -29,6 +29,7 @@ class LMDataset(torch.utils.data.Dataset):
         return {'input_ids': self.ids[idx], 'attention_mask': self.masks[idx]}
 
 def make_dataset(dataset, chunk_len=128):
+    chunk_len += 1
     real_tokens, pad_tokens = 0, 0
     ids = []
     masks = []
@@ -58,11 +59,14 @@ def eval_model(model, dataloader, k=10):
     indices = []
     for i, batch in enumerate(tqdm(dataloader)):
         batch = batch_to_device(batch)
-        out = model.forward(**batch).loss['logits'].detach().cpu().clone()
+        out = model.forward(
+            input_ids=batch['input_ids'][:, :-1],
+            attention_mask=batch['attention_mask'][:, :-1],
+        ).loss['logits'].detach().cpu().clone()
         topk = torch.topk(out, k, dim=2)
         values.append(topk.values)
         indices.append(topk.indices)
-        batch_to_device(batch, device='cpu')
+        batch = batch_to_device(batch, device='cpu')
         gc.collect()
         torch.cuda.empty_cache()
     values = torch.cat(values)
@@ -86,7 +90,7 @@ ids, masks = make_dataset(dataset[:SIZE]['text'])
 rand_idx = torch.randperm(ids.shape[0])
 ids = ids.index_select(0, rand_idx)
 masks = masks.index_select(0, rand_idx)
-N = min(N, ids.shape[0] / L)
+N = min(N, ids.shape[0] // L)
 for i in range(N):
     print(f"Processing chunk: {i}/{N}")
     train_dataset = LMDataset(ids[i*L:(i+1)*L].clone(), masks[i*L:(i+1)*L].clone())
