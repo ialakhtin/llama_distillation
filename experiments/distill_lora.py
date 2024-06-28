@@ -4,10 +4,37 @@ import json
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from transformers import LlamaForCausalLM, LlamaConfig, AutoTokenizer
+from peft import LoraConfig, get_peft_model
 
 
 DEVICE = 'cuda'
-tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
+model_name = 'TinyLlama/TinyLlama-1.1B-Chat-v1.0'
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+def lora_model(model):
+    lora_module_names = set()
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.modules.linear.Linear):
+            lora_module_names.add(name.split('.')[-1])
+    config = LoraConfig(
+        r=8,  #attention heads
+        lora_alpha=8,  #alpha scaling
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj","gate_proj", "up_proj"],  #gonna train all
+        lora_dropout=0.5,  # dropout probability for layers
+        bias="none",
+        task_type="CAUSAL_LM", #for Decoder models like GPT Seq2Seq for Encoder-Decoder models like T5
+    )
+    model = get_peft_model(model, config)
+    trainable_params = 0
+    all_param = 0
+    for _, param in model.named_parameters():
+        all_param += param.numel()
+        if param.requires_grad:
+            trainable_params += param.numel()
+    print(
+        f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param}"
+    )
+    return model
 
 class LogitsDataset(torch.utils.data.Dataset):
     def __init__(self, dir_path):
@@ -39,8 +66,6 @@ class Trainer:
         self.T = config['T']
         self.n_epoch = config['n_epoch']
         self.batch_size = config['batch_size']
-        # DEBUG
-        config['optimizer']['lr']/=10
         self.optimizer = torch.optim.AdamW(model.parameters(), **config['optimizer'])
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, 200, config['optimizer']['lr']/10)
         self.criterion = criterion
@@ -69,8 +94,7 @@ class Trainer:
             total_loss += loss.item()
             loss.backward()
             self.optimizer.step()
-        # DEBUG
-        # self.scheduler.step() 
+        self.scheduler.step()
         gc.collect()
         torch.cuda.empty_cache()
         total_loss /= len(dataloader)
@@ -98,13 +122,19 @@ class Trainer:
 
 
 
-exp_name = 'baseline'
-suffix = '_distill_only'
+exp_name = 'tiny_llama'
+suffix = ''
 with open(f'/root/llama_distillation/experiments/{exp_name}.json') as f:
     config = json.load(f)
-# model = LlamaForCausalLM(LlamaConfig(**config['model'])).to(DEVICE)
-model = LlamaForCausalLM.from_pretrained(f'/root/llama_distillation/experiments/models/{exp_name}_{suffix}').to(DEVICE)
-print(f"Number of parameters: {round(sum(p.numel() for p in model.parameters())/1e6)}M\tdevice: {DEVICE}")
+model = LlamaForCausalLM.from_pretrained(model_name).to(DEVICE)
+model = lora_model(model)
+
+outputs = model.generate(
+    **batch_to_device(tokenizer(["Is", "What", "Who", "Hello", "I"], return_tensors="pt"), DEVICE),
+    max_length=100,
+)
+print(tokenizer.batch_decode(outputs, skip_special_tokens=True))
+# print(f"Number of parameters: {round(sum(p.numel() for p in model.parameters())/1e6)}M\tdevice: {DEVICE}")
 trainer = Trainer(model, config, torch.nn.KLDivLoss(reduction="sum"))
 trainer.train_model('/root/logits100', 80)
-model.save_pretrained(f'/root/llama_distillation/experiments/models/{exp_name}_{suffix}')
+model.save_pretrained(f'/root/llama_distillation/experiments/models/{exp_name}{suffix}')

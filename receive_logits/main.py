@@ -4,16 +4,15 @@ import math
 import torch
 import huggingface_hub
 from tqdm import tqdm
-from datasets import load_dataset
+from datasets import load_from_disk
+from nltk.tokenize import sent_tokenize
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 huggingface_hub.login('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')
 load_config = BitsAndBytesConfig(load_in_8bit=True)
-model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf", quantization_config=load_config, torch_dtype=torch.bfloat16)
-tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
-
-os.environ["DATA_DIR"] = "data/dolma"
-dataset = load_dataset("allenai/dolma", split="train", name="v1_6-sample").shuffle(seed=42)
+model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-chat-hf", quantization_config=load_config, torch_dtype=torch.bfloat16)
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
+dataset = load_from_disk('/root/dolma_dataset_500k')
 
 
 class LMDataset(torch.utils.data.Dataset):
@@ -28,25 +27,47 @@ class LMDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return {'input_ids': self.ids[idx], 'attention_mask': self.masks[idx]}
 
-def make_dataset(dataset, chunk_len=128):
-    chunk_len += 1
-    real_tokens, pad_tokens = 0, 0
+def make_dataset(dataset, chunk_len=256):
+    real_tokens, pad_tokens, skipped = 0, 0, 0
     ids = []
     masks = []
-    for text in tqdm(dataset):
-        tokens = tokenizer(text + tokenizer.eos_token, return_tensors='pt')['input_ids'][0]
-        token_len = len(tokens)
-        if token_len <= 2:
+    eol_token = 13
+    bos_token = 1
+    eos_token = 2
+    is_same_line = False
+    for row in tqdm(dataset):
+        if row['source'] == 'stack-dedup':
             continue
-        pad_len = math.ceil(token_len / chunk_len) * chunk_len - token_len
-        real_tokens += token_len
-        pad_tokens += pad_len
-        pads = torch.zeros(pad_len, dtype=int)
-        masks.append(torch.cat([torch.ones(token_len, dtype=int), pads]).view(-1, chunk_len))
-        ids.append(torch.cat([tokens, pads]).view(-1, chunk_len))
-    ids = torch.cat(ids)
-    masks = torch.cat(masks)
-    print(f"Real tokens: {real_tokens}\tPad tokens: {pad_tokens}")
+        text = row['text']
+        lines = text.split('\n')
+        chunk = [bos_token]
+        for line in lines:
+            sents = sent_tokenize(line)
+            for sent in sents:
+                tokens = tokenizer.encode(sent, add_special_tokens=False)
+                if len(chunk) > 1 and not is_same_line and len(chunk) + len(tokens) < chunk_len - 1:
+                    chunk.append(eol_token)
+                is_same_line = True
+                if len(chunk) + len(tokens) < chunk_len:
+                    chunk.extend(tokens)
+                    continue
+                if len(chunk) > 1:
+                    chunk.append(eos_token)
+                    pad_len = chunk_len - len(chunk)
+                    pad_tokens += pad_len
+                    real_tokens += len(chunk) - 2
+                    pads = [0]*pad_len
+                    ids.append(chunk + pads)
+                    masks.append([1] * len(chunk) + pads)
+                chunk = [bos_token]
+                if len(tokens) >= chunk_len - 1 or len(tokens) == 0:
+                    skipped += len(tokens)
+                    continue
+                chunk.extend(tokens)
+            is_same_line = False
+    ids = torch.tensor(ids)
+    masks = torch.tensor(masks)
+    print(f"Real tokens: {real_tokens}\tPad tokens: {pad_tokens}\tSkipped: {skipped}")
     return ids, masks
 
 
@@ -60,8 +81,8 @@ def eval_model(model, dataloader, k=10):
     for i, batch in enumerate(tqdm(dataloader)):
         batch = batch_to_device(batch)
         out = model.forward(
-            input_ids=batch['input_ids'][:, :-1],
-            attention_mask=batch['attention_mask'][:, :-1],
+            input_ids=batch['input_ids'],
+            attention_mask=batch['attention_mask'],
         ).loss['logits'].detach().cpu().clone()
         topk = torch.topk(out, k, dim=2)
         values.append(topk.values)
@@ -82,11 +103,11 @@ def save_results(values, indices, dataset, name='result'):
     torch.save(dataset.masks, f"/root/{name}/attention_masks.pt")
 
 
-SIZE = 200000
-N = 100
+SIZE = 250000
+N = 80
 K = 100
 L = 5000
-ids, masks = make_dataset(dataset[:SIZE]['text'])
+ids, masks = make_dataset(dataset.take(SIZE))
 rand_idx = torch.randperm(ids.shape[0])
 ids = ids.index_select(0, rand_idx)
 masks = masks.index_select(0, rand_idx)
@@ -94,7 +115,7 @@ N = min(N, ids.shape[0] // L)
 for i in range(N):
     print(f"Processing chunk: {i}/{N}")
     train_dataset = LMDataset(ids[i*L:(i+1)*L].clone(), masks[i*L:(i+1)*L].clone())
-    train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=4)
+    train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=2)
     values, indices = eval_model(model, train_dataloader, k=K)
     os.makedirs(f"/root/logits{K}", exist_ok=True)
     save_results(values, indices, train_dataset, name=f'logits{K}/chunk{i}')

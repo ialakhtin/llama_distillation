@@ -1,0 +1,9 @@
+  0%|          | 0/4210 [00:00<?, ?it/s]  0%|          | 1/4210 [00:02<2:33:04,  2.18s/it]  0%|          | 2/4210 [00:03<2:11:04,  1.87s/it]  0%|          | 3/4210 [00:05<2:04:17,  1.77s/it]  0%|          | 4/4210 [00:07<2:01:14,  1.73s/it]  0%|          | 5/4210 [00:08<1:59:24,  1.70s/it]  0%|          | 6/4210 [00:10<1:58:10,  1.69s/it]  0%|          | 7/4210 [00:12<1:57:24,  1.68s/it]  0%|          | 8/4210 [00:13<1:57:11,  1.67s/it]  0%|          | 9/4210 [00:15<1:56:55,  1.67s/it]  0%|          | 10/4210 [00:17<1:56:48,  1.67s/it]  0%|          | 11/4210 [00:18<1:56:45,  1.67s/it]  0%|          | 12/4210 [00:20<1:56:38,  1.67s/it]  0%|          | 13/4210 [00:22<1:56:49,  1.67s/it]  0%|          | 14/4210 [00:23<1:56:47,  1.67s/it]  0%|          | 15/4210 [00:25<1:56:46,  1.67s/it]  0%|          | 15/4210 [00:26<2:02:18,  1.75s/it]
+Traceback (most recent call last):
+  File "/root/llama_distillation/benchmarks/run_benchmark.py", line 224, in <module>
+    model = train_dataset.fine_tune(model)
+  File "/root/llama_distillation/benchmarks/run_benchmark.py", line 89, in fine_tune
+    loss = criterion(logits[:, self.options], batch['label'])
+  File "/root/venv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1528, in _wrapped_call_impl
+    def _wrapped_call_impl(self, *args, **kwargs):
+KeyboardInterrupt
